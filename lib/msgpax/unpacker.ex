@@ -50,7 +50,7 @@ defmodule Msgpax.Unpacker do
   defunpack = fn clauses ->
     for {formats, value} <- clauses, format <- formats do
       defp unpack(<<unquote(format), rest::bits>>, result, options, outer, index, count) do
-        unpack_continue(rest, [unquote(value) | result], options, outer, index, count)
+        unpack_continue(rest, unquote(value), result, options, outer, index, count)
       end
     end
   end
@@ -87,7 +87,7 @@ defmodule Msgpax.Unpacker do
     defp unpack(<<unquote(format), rest::bits>>, result, options, outer, index, count) do
       case var!(length, __MODULE__) do
         0 ->
-          unpack_continue(rest, [%{} | result], options, outer, index, count)
+          unpack_continue(rest, %{}, result, options, outer, index, count)
 
         length ->
           unpack(rest, result, options, [:map, index, count | outer], 0, length * 2)
@@ -105,7 +105,7 @@ defmodule Msgpax.Unpacker do
     defp unpack(<<unquote(format), rest::bits>>, result, options, outer, index, count) do
       case var!(length, __MODULE__) do
         0 ->
-          unpack_continue(rest, [[] | result], options, outer, index, count)
+          unpack_continue(rest, [], result, options, outer, index, count)
 
         length ->
           unpack(rest, result, options, [:list, index, count | outer], 0, length)
@@ -164,6 +164,36 @@ defmodule Msgpax.Unpacker do
     throw(:incomplete)
   end
 
+  @compile {:inline, [unpack_continue: 7]}
+
+  defp unpack_continue(rest, value, result, options, [:list | _] = outer, 0 = index, count) do
+    unpack_continue(rest, [[value] | result], options, outer, index, count)
+  end
+
+  defp unpack_continue(rest, value, result, options, [:list | _] = outer, index, count) do
+    [acc | result] = result
+    unpack_continue(rest, [[value | acc] | result], options, outer, index, count)
+  end
+
+  defp unpack_continue(rest, value, result, options, [:map | _] = outer, 0 = index, count) do
+    unpack_continue(rest, [value, [] | result], options, outer, index, count)
+  end
+
+  defp unpack_continue(rest, value, result, options, [:map | _] = outer, index, count) do
+    case rem(index, 2) do
+      0 ->
+        unpack_continue(rest, [value | result], options, outer, index, count)
+
+      1 ->
+        [key, acc | result] = result
+        unpack_continue(rest, [[{key, value} | acc] | result], options, outer, index, count)
+    end
+  end
+
+  defp unpack_continue(rest, value, result, options, outer, index, count) do
+    unpack_continue(rest, [value | result], options, outer, index, count)
+  end
+
   @compile {:inline, [unpack_continue: 6]}
 
   defp unpack_continue(rest, result, options, outer, index, count) do
@@ -176,10 +206,15 @@ defmodule Msgpax.Unpacker do
     end
   end
 
-  defp unpack_continue(<<buffer::bits>>, result, options, [kind, index, length | outer], count) do
-    result = build_collection(result, count, kind)
-
-    unpack_continue(buffer, result, options, outer, index, length)
+  defp unpack_continue(
+         <<buffer::bits>>,
+         [acc | result],
+         options,
+         [kind, index, length | outer],
+         _count
+       ) do
+    value = build_collection(acc, kind)
+    unpack_continue(buffer, value, result, options, outer, index, length)
   end
 
   defp unpack_continue(<<buffer::bits>>, [value], _options, [], 1) do
@@ -231,29 +266,8 @@ defmodule Msgpax.Unpacker do
     struct
   end
 
-  @compile {:inline, [build_collection: 3]}
+  @compile {:inline, [build_collection: 2]}
 
-  defp build_collection(result, count, :list) do
-    build_list(result, [], count)
-  end
-
-  defp build_collection(result, count, :map) do
-    build_map(result, [], count)
-  end
-
-  defp build_list(result, list, 0) do
-    [list | result]
-  end
-
-  defp build_list([item | rest], list, count) do
-    build_list(rest, [item | list], count - 1)
-  end
-
-  defp build_map(result, pairs, 0) do
-    [:maps.from_list(pairs) | result]
-  end
-
-  defp build_map([value, key | rest], pairs, count) do
-    build_map(rest, [{key, value} | pairs], count - 2)
-  end
+  defp build_collection(acc, :list), do: Enum.reverse(acc)
+  defp build_collection(acc, :map), do: :maps.from_list(acc)
 end
